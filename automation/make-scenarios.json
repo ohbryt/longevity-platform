@@ -1,0 +1,248 @@
+// Make.com Automation Scenarios for Longevity Platform
+
+// Scenario 1: Daily Research Curation
+{
+  "name": "Daily Research Curation",
+  "schedule": "0 6 * * *", // Daily at 6 AM
+  "trigger": "Webhook",
+  "steps": [
+    {
+      "name": "Fetch RSS Feeds",
+      "app": "HTTP",
+      "action": "Make a request",
+      "params": {
+        "url": "https://your-platform.com/api/automation/fetch-research",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json",
+          "Authorization": "{{auth.token}}"
+        }
+      }
+    },
+    {
+      "name": "Filter Relevant Papers",
+      "app": "JSON",
+      "action": "Parse JSON",
+      "params": {
+        "data": "{{0.body}}",
+        "filter": {
+          "relevanceScore": { "$gte": 5 },
+          "pubDate": { "$gte": "{{$subtract [7] days}}" }
+        }
+      }
+    },
+    {
+      "name": "Generate AI Content",
+      "app": "OpenAI",
+      "action": "Create completion",
+      "params": {
+        "prompt": "As Professor Chang-Myung Oh, analyze this longevity research: {{1.data}}",
+        "model": "gpt-4",
+        "max_tokens": 1500
+      }
+    },
+    {
+      "name": "Store Content",
+      "app": "HTTP",
+      "action": "Make a request",
+      "params": {
+        "url": "https://your-platform.com/api/content/store",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "content": "{{2.choices.0.text}}",
+          "source": "automated-curation",
+          "timestamp": "{{$now}}"
+        }
+      }
+    }
+  ]
+}
+
+// Scenario 2: Weekly Newsletter Generation
+{
+  "name": "Weekly Newsletter",
+  "schedule": "0 7 * * 1", // Monday 7 AM
+  "trigger": "Webhook",
+  "steps": [
+    {
+      "name": "Get Top Papers",
+      "app": "Google Sheets",
+      "action": "Get rows",
+      "params": {
+        "spreadsheetId": "{{env.google_sheet_id}}",
+        "range": "A:F",
+        "sort": "relevanceScore DESC"
+      }
+    },
+    {
+      "name": "Generate Newsletter",
+      "app": "OpenAI", 
+      "action": "Create completion",
+      "params": {
+        "prompt": "Create weekly newsletter from these research papers: {{1.data}}. Style: Professor Chang-Myung Oh. Include 3 key insights and practical applications.",
+        "model": "gpt-4",
+        "max_tokens": 2000
+      }
+    },
+    {
+      "name": "Create Email Campaign",
+      "app": "SendGrid",
+      "action": "Send campaign",
+      "params": {
+        "listId": "{{env.premium_list_id}}",
+        "subject": "{{2.choices.0.text.split('\\n')[0]}}",
+        "content": "{{2.choices.0.text}}",
+        "segment": "premium"
+      }
+    },
+    {
+      "name": "Update Website",
+      "app": "HTTP",
+      "action": "Make a request", 
+      "params": {
+        "url": "https://your-platform.com/api/content/publish",
+        "method": "POST",
+        "body": {
+          "content": "{{2.choices.0.text}}",
+          "type": "newsletter",
+          "publishDate": "{{$now}}"
+        }
+      }
+    }
+  ]
+}
+
+// Scenario 3: VOD Lecture Production
+{
+  "name": "VOD Lecture Production", 
+  "schedule": "0 8 * * 5", // Friday 8 AM for Monday release
+  "trigger": "Webhook",
+  "steps": [
+    {
+      "name": "Select Breakthrough Paper",
+      "app": "Google Sheets",
+      "action": "Get rows",
+      "params": {
+        "spreadsheetId": "{{env.google_sheet_id}}",
+        "filter": {
+          "relevanceScore": { "$gte": 8 },
+          "journal": { "$in": ["Nature Aging", "Cell Metabolism"] }
+        },
+        "limit": 1,
+        "sort": "paperScore DESC"
+      }
+    },
+    {
+      "name": "Generate Lecture Script",
+      "app": "OpenAI",
+      "action": "Create completion", 
+      "params": {
+        "prompt": "Create 15-minute video script for VOD lecture. Topic: {{1.data.0.title}}. Research: {{1.data.0.content}}. Style: Professor Chang-Myung Oh. Include: introduction, 5 key concepts, practical takeaways.",
+        "model": "gpt-4",
+        "max_tokens": 3000
+      }
+    },
+    {
+      "name": "Generate Visual Aids",
+      "app": "DALL-E 3",
+      "action": "Generate image",
+      "params": {
+        "prompt": "Scientific diagram showing {{1.data.0.title}} mechanism for longevity education, clean medical illustration style",
+        "size": "1024x1024",
+        "style": "natural"
+      }
+    },
+    {
+      "name": "Create VOD Package",
+      "app": "HTTP",
+      "action": "Make a request",
+      "params": {
+        "url": "https://your-platform.com/api/vod/create",
+        "method": "POST", 
+        "body": {
+          "title": "{{1.data.0.title}}",
+          "script": "{{2.choices.0.text}}",
+          "visuals": "{{3.data.0.url}}",
+          "duration": "15 minutes",
+          "price": "$9.99"
+        }
+      }
+    }
+  ]
+}
+
+// Scenario 4: Social Media Distribution
+{
+  "name": "Social Media Blast",
+  "trigger": "New content published",
+  "steps": [
+    {
+      "name": "Twitter Thread",
+      "app": "Twitter",
+      "action": "Create thread",
+      "params": {
+        "tweets": [
+          "🔬 New research: {{content.title}} - {{content.keyInsights}} #LongevityScience #AgingResearch",
+          "📊 Key finding: {{content.practicalApplications}} #Biohacking #Healthspan",
+          "🎥 Watch my VOD analysis: {{platform_url}}/vod/{{vod_id}} #Longevity"
+        ]
+      }
+    },
+    {
+      "name": "LinkedIn Post", 
+      "app": "LinkedIn",
+      "action": "Create post",
+      "params": {
+        "text": "As a longevity researcher, I found this fascinating: {{content.title}}. Here's what it means for extending healthspan... {{content.practicalApplications}} #Longevity #MetabolicHealth",
+        "url": "{{platform_url}}/content/{{content_id}}"
+      }
+    },
+    {
+      "name": "Reddit Research Updates",
+      "app": "Reddit", 
+      "action": "Create post",
+      "params": {
+        "subreddit": "longevity",
+        "title": "{{content.title}} - New Research Analysis",
+        "text": "Professor Oh's take on new research from {{content.journal}}: {{content.summary}}... {{content.practicalApplications}}",
+        "url": "{{platform_url}}/content/{{content_id}}"
+      }
+    }
+  ]
+}
+
+// Inoreader Integration
+{
+  "name": "Inoreader RSS Integration",
+  "setup": {
+    "add_sources": [
+      {
+        "name": "Nature Aging RSS",
+        "url": "https://www.nature.com/nature/articles?journal=42926&type=latest&format=xml",
+        "category": "Aging Research",
+        "automation_rules": {
+          "keywords": ["aging", "longevity", "senescence"],
+          "min_relevance": 7,
+          "auto_share": true
+        }
+      },
+      {
+        "name": "Cell Metabolism RSS", 
+        "url": "https://www.cell.com/cell/metabolism/current",
+        "category": "Metabolic Health",
+        "automation_rules": {
+          "keywords": ["metabolism", "glp-1", "sglt2", "insulin"],
+          "min_relevance": 6,
+          "auto_share": true
+        }
+      }
+    ],
+    "webhook_url": "https://your-platform.com/api/automation/inoreader-webhook",
+    "authentication": {
+      "api_key": "{{env.inoreader_api_key}}"
+    }
+  }
+}

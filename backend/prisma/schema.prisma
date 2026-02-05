@@ -1,0 +1,182 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  stripeCustomerId String? @map("stripe_customer_id")
+  subscriptionTier String @default("free") @map("subscription_tier")
+  subscriptionId String? @map("subscription_id")
+  status        String   @default("active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Content {
+  id            String   @id @default(cuid())
+  title         String
+  slug          String   @unique
+  body          String
+  type          String
+  author        String   @default("AI-Assisted (Prof. Oh)")
+  status        String   @default("draft")
+  tier          String   @default("free")
+  publishedAt    DateTime? @map("published_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  metaTitle     String?  @map("meta_title")
+  metaDescription String? @map("meta_description")
+  metaKeywords  String?  @map("meta_keywords")
+  
+  views         Int      @default(0)
+  readTime      Int      @default(0)
+  engagementScore Float @default(0.0) @map("engagement_score")
+
+  researchSources ResearchSource[]
+  contentEngagements ContentEngagement[]
+  newsletterIssues NewsletterIssue[]
+
+  @@map("content")
+}
+
+model ResearchSource {
+  id            String   @id @default(cuid())
+  contentId     String   @map("content_id")
+  title         String
+  authors       String?
+  journal       String?
+  publicationDate DateTime? @map("publication_date")
+  doi           String?  @map("doi")
+  url           String   @map("url")
+  relevanceScore Int     @default(0) @map("relevance_score")
+  abstract      String?  @map("abstract")
+  keyFindings   String?  @map("key_findings")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  content       Content? @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  contentsResearchSources ContentResearchSource[]
+
+  @@map("research_sources")
+}
+
+model ContentResearchSource {
+  contentId       String @map("content_id")
+  researchSourceId String @map("research_source_id")
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  researchSource ResearchSource @relation(fields: [researchSourceId], references: [id], onDelete: Cascade)
+
+  @@id([contentId, researchSourceId])
+}
+
+model VodLecture {
+  id            String   @id @default(cuid())
+  contentId     String   @map("content_id")
+  title         String
+  description   String?
+  durationMinutes Int     @map("duration_minutes")
+  price         Decimal  @map("price")
+  videoUrl      String   @map("video_url")
+  thumbnailUrl  String   @map("thumbnail_url")
+  transcript    String?
+  status        String   @default("published")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("vod_lectures")
+}
+
+model NewsletterIssue {
+  id        String   @id @default(cuid())
+  title     String
+  contentId String   @map("content_id")
+  issueNumber Int     @map("issue_number")
+  sentAt    DateTime? @map("sent_at")
+  openRate  Float?   @map("open_rate")
+  clickRate Float?   @map("click_rate")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@map("newsletter_issues")
+}
+
+model EmailSubscription {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  email          String
+  status         String   @default("active")
+  subscriptionType String   @map("subscription_type")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_subscriptions")
+}
+
+model EmailDelivery {
+  id            String   @id @default(cuid())
+  subscriptionId String   @map("subscription_id")
+  campaignId    String?
+  status        String
+  timestamp     DateTime @default(now())
+
+  subscription EmailSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@map("email_delivery")
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  eventType String   @map("event_type")
+  properties Json?
+  timestamp DateTime @default(now())
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("analytics_events")
+}
+
+model ContentEngagement {
+  id           String   @id @default(cuid())
+  contentId    String   @map("content_id")
+  userId       String?  @map("user_id")
+  readProgress Int     @default(0) @map("read_progress")
+  timeSpent   Int     @default(0) @map("time_spent")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  content Content @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("content_engagement")
+}
+
+model AutomationLog {
+  id            String   @id @default(cuid())
+  scenarioName  String   @map("scenario_name")
+  status        String
+  inputData     Json?    @map("input_data")
+  outputData    Json?    @map("output_data")
+  errorMessage String?  @map("error_message")
+  executionTimeMs Int?    @map("execution_time_ms")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("automation_logs")
+}
