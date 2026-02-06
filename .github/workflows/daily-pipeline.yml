@@ -1,0 +1,57 @@
+name: Daily Content Pipeline
+
+on:
+  schedule:
+    # 매일 오전 7시 KST = 22:00 UTC (전날)
+    - cron: '0 22 * * *'
+  workflow_dispatch: # 수동 실행 가능
+
+jobs:
+  generate-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install aiohttp google-generativeai python-dotenv
+
+      - name: Run content pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        working-directory: automation
+        run: python content_pipeline.py
+
+      - name: Copy content to frontend
+        run: |
+          mkdir -p frontend/content
+          cp automation/content_drafts/*.json frontend/content/ 2>/dev/null || true
+          echo "Articles: $(ls frontend/content/*.json 2>/dev/null | wc -l)"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: frontend
+        run: |
+          vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+          vercel build --prod --token=$VERCEL_TOKEN
+          vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN

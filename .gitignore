@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.local
+.DS_Store
+__pycache__/
+*.pyc
+automation/venv/
+automation/pipeline.log
+automation/launchd-*.log
+automation/content_drafts/
+frontend/.next/
+frontend/node_modules/
+frontend/.env.local
+frontend/content/
+checkpoints/
+llm/
+minimind-reference/
