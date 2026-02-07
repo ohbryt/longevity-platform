@@ -72,6 +72,7 @@ class ContentDraft:
     confidence_score: float
     created_at: str
     status: str  # draft, reviewed, published
+    source: str = ""  # pubmed, biorxiv, medrxiv, clinical_trial
 
 
 @dataclass
@@ -114,6 +115,14 @@ class PaperDiscovery:
         "senostatics", "SASP inhibitors", "inflammaging",
         # Korean research focus
         "Korean longevity", "Asian metabolic disease",
+    ]
+
+    # Broader keywords for clinical trials (more general terms work better)
+    CLINICAL_TRIAL_KEYWORDS = [
+        "aging", "longevity", "senolytic", "NAD+", "NMN",
+        "rapamycin", "metformin anti-aging", "GLP-1",
+        "healthspan", "biological age", "caloric restriction",
+        "nicotinamide riboside", "senolytics dasatinib quercetin",
     ]
 
     RELEVANT_JOURNALS = [
@@ -255,40 +264,47 @@ class PaperDiscovery:
         papers = []
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status != 200:
-                        return []
-                    data = await resp.json()
+                # Paginate up to 3 pages (300 papers) for better coverage
+                for cursor in range(0, 300, 100):
+                    page_url = f"{self.biorxiv_base}/details/{server}/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}/{cursor}/json"
+                    async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        if resp.status != 200:
+                            break
+                        data = await resp.json()
 
-            collection = data.get("collection", [])
+                    collection = data.get("collection", [])
+                    if not collection:
+                        break
 
-            # Filter by query keywords
-            query_lower = query.lower()
-            for item in collection:
-                title = item.get("title", "")
-                abstract = item.get("abstract", "")
+                    # Filter by query keywords (flexible word matching)
+                    query_words = [w.lower().strip("+") for w in query.split() if len(w) >= 3]
+                    for item in collection:
+                        title = item.get("title", "").lower()
+                        abstract = item.get("abstract", "").lower()
+                        text = title + " " + abstract
 
-                # Check if query matches title or abstract
-                if query_lower in title.lower() or query_lower in abstract.lower():
-                    paper = Paper(
-                        title=title,
-                        authors=item.get("authors", "").split("; ")[:5],
-                        abstract=abstract,
-                        journal=f"{server} (preprint)",
-                        doi=item.get("doi", ""),
-                        pub_date=item.get("date", ""),
-                        url=f"https://www.{server}.org/content/{item.get('doi', '')}",
-                        topics=[server, "preprint"]
-                    )
-                    papers.append(paper)
+                        # Match: ALL query words must appear (AND logic)
+                        matches = sum(1 for w in query_words if w in text)
+                        if query_words and matches >= len(query_words):
+                            paper = Paper(
+                                title=item.get("title", ""),
+                                authors=item.get("authors", "").split("; ")[:5],
+                                abstract=item.get("abstract", ""),
+                                journal=f"{server} (preprint)",
+                                doi=item.get("doi", ""),
+                                pub_date=item.get("date", ""),
+                                url=f"https://www.{server}.org/content/{item.get('doi', '')}",
+                                topics=[server, "preprint"]
+                            )
+                            papers.append(paper)
 
-                if len(papers) >= max_results:
-                    break
+                    if len(papers) >= max_results:
+                        break
 
         except Exception as e:
-            print(f"bioRxiv search error: {e}")
+            print(f"{server} search error: {e}")
 
-        return papers
+        return papers[:max_results]
 
     async def search_medrxiv(
         self,
@@ -394,12 +410,14 @@ class PaperDiscovery:
         """
         tasks = [
             self.search_pubmed(query, max_per_source, days_back),
-            self.search_biorxiv(query, max_per_source, days_back),
-            self.search_medrxiv(query, max_per_source, days_back),
+            self.search_biorxiv(query, max_per_source, days_back * 2),  # wider window for preprints
+            self.search_medrxiv(query, max_per_source, days_back * 2),
         ]
 
         if include_trials:
-            tasks.append(self.search_clinical_trials(query, max_per_source))
+            # Use simpler query for clinical trials (first significant word)
+            trial_query = query.split()[0] if query else "longevity"
+            tasks.append(self.search_clinical_trials(trial_query, max_per_source))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -427,20 +445,25 @@ class PaperDiscovery:
 
             # PubMed (always)
             pubmed_papers = await self.search_pubmed(keyword, max_results=10, days_back=7)
+            for p in pubmed_papers:
+                if not p.topics or "pubmed" not in p.topics:
+                    p.topics = ["pubmed"]
             all_papers.extend(pubmed_papers)
 
             if include_preprints:
                 # bioRxiv
-                biorxiv_papers = await self.search_biorxiv(keyword, max_results=5, days_back=14)
+                biorxiv_papers = await self.search_biorxiv(keyword, max_results=5, days_back=30)
                 all_papers.extend(biorxiv_papers)
 
-                # medRxiv
-                medrxiv_papers = await self.search_medrxiv(keyword, max_results=5, days_back=14)
+                # medRxiv (30 days, broader window for medical preprints)
+                medrxiv_papers = await self.search_medrxiv(keyword, max_results=5, days_back=30)
                 all_papers.extend(medrxiv_papers)
 
-            if include_trials:
-                # Clinical trials
-                trials = await self.search_clinical_trials(keyword, max_results=3)
+        # Clinical trials use broader keywords for better results
+        if include_trials:
+            for keyword in self.CLINICAL_TRIAL_KEYWORDS[:6]:
+                print(f"   🏥 Clinical trial keyword: {keyword}")
+                trials = await self.search_clinical_trials(keyword, max_results=5)
                 for trial in trials:
                     all_papers.append(self.clinical_trial_to_paper(trial))
 
@@ -459,7 +482,39 @@ class PaperDiscovery:
 
         print(f"   ✅ Found {len(unique_papers)} unique papers")
 
-        return sorted(unique_papers, key=lambda p: p.relevance_score, reverse=True)[:15]
+        # Ensure source diversity: reserve slots for each source
+        sorted_papers = sorted(unique_papers, key=lambda p: p.relevance_score, reverse=True)
+
+        # Group by source
+        by_source = {"pubmed": [], "biorxiv": [], "medrxiv": [], "clinical_trial": []}
+        for paper in sorted_papers:
+            src = "pubmed"
+            for t in (paper.topics or []):
+                if t in by_source:
+                    src = t
+                    break
+            by_source[src].append(paper)
+
+        # Guarantee minimum representation: 2 per non-empty source, fill rest by score
+        selected = []
+        used = set()
+        for source in ["clinical_trial", "medrxiv", "biorxiv", "pubmed"]:
+            for paper in by_source[source][:3]:  # up to 3 per source guaranteed
+                key = paper.doi or paper.title
+                if key not in used:
+                    selected.append(paper)
+                    used.add(key)
+
+        # Fill remaining slots with highest-scored papers
+        for paper in sorted_papers:
+            if len(selected) >= 15:
+                break
+            key = paper.doi or paper.title
+            if key not in used:
+                selected.append(paper)
+                used.add(key)
+
+        return selected[:15]
 
     def _calculate_relevance(self, paper: Paper) -> float:
         """Calculate relevance score for a paper"""
@@ -704,6 +759,16 @@ JSON 형식으로 응답해주세요:
                 "confidence_score": 0.5
             }
 
+        # Determine source from paper topics
+        source = "pubmed"  # default
+        if paper.topics:
+            if "clinical_trial" in paper.topics:
+                source = "clinical_trial"
+            elif "medrxiv" in paper.topics:
+                source = "medrxiv"
+            elif "biorxiv" in paper.topics:
+                source = "biorxiv"
+
         return ContentDraft(
             paper=paper,
             content_type=content_type,
@@ -711,14 +776,15 @@ JSON 형식으로 응답해주세요:
             korean_summary=content_data.get("korean_summary", ""),
             korean_body=content_data.get("korean_body", ""),
             english_title=paper.title,
-            english_summary=paper.abstract[:200] + "...",
+            english_summary=paper.abstract,  # Full abstract, not truncated
             key_insights=content_data.get("key_insights", []),
             practical_applications=content_data.get("practical_applications", []),
             citations=[{"doi": paper.doi, "title": paper.title, "journal": paper.journal}],
             fact_check_notes=[],
             confidence_score=content_data.get("confidence_score", 0.5),
             created_at=datetime.now().isoformat(),
-            status="draft"
+            status="draft",
+            source=source,
         )
 
     async def _call_gemini(self, prompt: str, max_retries: int = 3) -> str:
@@ -1004,15 +1070,17 @@ class ContentPipeline:
         )
 
         # Show source breakdown
-        source_counts = {}
+        source_counts = {"pubmed": 0, "biorxiv": 0, "medrxiv": 0, "clinical_trial": 0}
         for paper in papers:
             for topic in (paper.topics or []):
-                if topic in ["pubmed", "biorxiv", "medrxiv", "clinical_trial"]:
-                    source_counts[topic] = source_counts.get(topic, 0) + 1
+                if topic in source_counts:
+                    source_counts[topic] += 1
+                    break  # count each paper once
 
         print(f"\n📊 수집 결과:")
         for source, count in source_counts.items():
-            print(f"   • {source}: {count}개")
+            icon = {"pubmed": "📄", "biorxiv": "🧬", "medrxiv": "🏥", "clinical_trial": "💊"}.get(source, "•")
+            print(f"   {icon} {source}: {count}개")
         print(f"   총 {len(papers)}개 논문 발견")
 
         top_papers = papers[:5]  # 상위 5개
