@@ -120,6 +120,10 @@ class PaperDiscovery:
         "NMN supplementation", "resveratrol", "spermidine",
         # Emerging
         "senostatics", "SASP inhibitors", "inflammaging",
+        # Cancer diagnosis & therapeutics
+        "liquid biopsy cancer", "immunotherapy checkpoint",
+        "CAR-T cell therapy", "cancer biomarker early detection",
+        "targeted therapy oncology", "tumor microenvironment",
         # Korean research focus
         "Korean longevity", "Asian metabolic disease",
     ]
@@ -130,6 +134,9 @@ class PaperDiscovery:
         "rapamycin", "metformin anti-aging", "GLP-1",
         "healthspan", "biological age", "caloric restriction",
         "nicotinamide riboside", "senolytics dasatinib quercetin",
+        # Cancer
+        "immunotherapy cancer", "CAR-T", "liquid biopsy",
+        "checkpoint inhibitor", "targeted therapy cancer",
     ]
 
     RELEVANT_JOURNALS = [
