@@ -2,8 +2,8 @@ name: Daily Content Pipeline
 
 on:
   schedule:
-    # 매일 오전 7시 KST = 22:00 UTC (전날)
-    - cron: '0 22 * * *'
+    # 매주 월요일 오전 9시 KST = 일요일 00:00 UTC
+    - cron: '0 0 * * 1'
   workflow_dispatch: # 수동 실행 가능
 
 jobs:
@@ -54,4 +54,21 @@ jobs:
         run: |
           vercel pull --yes --environment=production --token=$VERCEL_TOKEN
           vercel build --prod --token=$VERCEL_TOKEN
-          vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN 2>&1 | grep -o 'https://[^ ]*')
+          echo "Deployed: $DEPLOY_URL"
+
+      - name: Send weekly digest to subscribers
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          echo "Sending digest email to subscribers..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "https://longevity-lab.io/api/newsletter/send-digest" \
+            -H "Authorization: Bearer $CRON_SECRET")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+          echo "Status: $HTTP_CODE"
+          echo "Response: $BODY"
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "Warning: Digest send returned $HTTP_CODE"
+          fi
