@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Python dependencies
-        run: pip install aiohttp google-generativeai python-dotenv
+        run: pip install aiohttp google-genai python-dotenv
 
       - name: Run content pipeline
         env:

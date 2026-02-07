@@ -29,7 +29,14 @@ def parse_json_response(text: str) -> dict:
     # Strip ```json ... ``` or ``` ... ```
     cleaned = re.sub(r'^```(?:json)?\s*\n?', '', text.strip())
     cleaned = re.sub(r'\n?```\s*$', '', cleaned)
-    return json.loads(cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Try to extract JSON object from mixed text
+        match = re.search(r'\{[\s\S]*\}', cleaned)
+        if match:
+            return json.loads(match.group())
+        raise
 
 # Load .env file
 load_dotenv()
@@ -788,26 +795,33 @@ JSON 형식으로 응답해주세요:
         )
 
     async def _call_gemini(self, prompt: str, max_retries: int = 3) -> str:
-        """Call Gemini API with retry on rate limit"""
-        import google.generativeai as genai
+        """Call Gemini API with retry on rate limit (new google.genai SDK)"""
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        client = genai.Client(api_key=GEMINI_API_KEY)
 
         for attempt in range(max_retries):
             try:
-                response = model.generate_content(
-                    [self.SYSTEM_PROMPT_KOREAN, prompt],
-                    generation_config={
-                        "temperature": 0.7,
-                        "max_output_tokens": 2048,
-                    }
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[self.SYSTEM_PROMPT_KOREAN + "\n\n" + prompt],
+                    config=types.GenerateContentConfig(
+                        temperature=0.7,
+                        max_output_tokens=8192,
+                        safety_settings=[
+                            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                        ],
+                    ),
                 )
                 return response.text
             except Exception as e:
                 error_str = str(e)
                 if "429" in error_str and attempt < max_retries - 1:
-                    wait = (attempt + 1) * 15  # 15s, 30s, 45s
+                    wait = (attempt + 1) * 15
                     print(f"   ⏳ Rate limit, {wait}초 대기 후 재시도 ({attempt + 1}/{max_retries})...")
                     await asyncio.sleep(wait)
                     continue
@@ -929,19 +943,26 @@ JSON 형식으로 응답:
             return await self._check_with_openai(prompt)
 
     async def _check_with_gemini(self, prompt: str) -> Dict[str, Any]:
-        """Fact-check using Gemini"""
+        """Fact-check using Gemini (new google.genai SDK)"""
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types
 
-            genai.configure(api_key=GEMINI_API_KEY)
-            model = genai.GenerativeModel('gemini-2.5-pro')
+            client = genai.Client(api_key=GEMINI_API_KEY)
 
-            response = model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": 0.3,
-                    "max_output_tokens": 1024,
-                }
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[prompt],
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=4096,
+                    safety_settings=[
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                    ],
+                ),
             )
             return parse_json_response(response.text)
         except json.JSONDecodeError:
