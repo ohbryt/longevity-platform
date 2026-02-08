@@ -29,3 +29,6 @@ httpx>=0.26.0
 pydantic>=2.5.0
 tenacity>=8.2.0  # Retry logic
 rich>=13.0.0     # Pretty console output
+
+# ============ Image Generation ============
+Pillow>=10.0.0

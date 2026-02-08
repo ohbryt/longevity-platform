@@ -4,10 +4,13 @@ node_modules/
 .DS_Store
 __pycache__/
 *.pyc
+rag/.env.gemini
 automation/venv/
 automation/pipeline.log
 automation/launchd-*.log
 automation/content_drafts/
+automation/card_news/
+automation/fonts/
 frontend/.next/
 frontend/node_modules/
 frontend/.env.local

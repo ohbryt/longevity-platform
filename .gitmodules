@@ -1,0 +1,5 @@
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/ohbryt/longevity-frontend.git
+	branch = main
+
