@@ -1205,6 +1205,51 @@ async def main():
     # Save drafts
     pipeline.save_drafts(drafts)
 
+    # Generate Instagram card news images
+    try:
+        from card_news_generator import CardNewsGenerator
+        print("\n🎨 Instagram 카드뉴스 생성 중...")
+        card_gen = CardNewsGenerator()
+        for draft in drafts:
+            paths = card_gen.generate_for_draft(draft)
+            print(f"   📸 {len(paths)} slides: {draft.korean_title[:40]}...")
+        print("✅ 카드뉴스 생성 완료")
+    except Exception as e:
+        print(f"⚠️ 카드뉴스 생성 실패 (계속 진행): {e}")
+
+    # Instagram auto-posting (opt-in via env var)
+    instagram_enabled = os.getenv("INSTAGRAM_AUTO_POST", "false").lower() == "true"
+    if instagram_enabled:
+        try:
+            from instagram_poster import InstagramPoster
+            print("\n📱 Instagram 자동 포스팅 중...")
+            poster = InstagramPoster(
+                ig_user_id=os.getenv("INSTAGRAM_USER_ID"),
+                access_token=os.getenv("INSTAGRAM_ACCESS_TOKEN"),
+                github_repo=os.getenv("GITHUB_REPOSITORY", "chang-myungoh/longevity-platform"),
+                pages_base_url=os.getenv("PAGES_BASE_URL", "https://chang-myungoh.github.io/longevity-platform"),
+            )
+
+            # Build list of (draft_data, card_news_dir) pairs
+            drafts_with_dirs = []
+            card_news_base = os.path.join(os.path.dirname(__file__), "card_news")
+            for draft in drafts:
+                from dataclasses import asdict as _asdict
+                draft_data = _asdict(draft)
+                # Reconstruct card_news dir name (matches CardNewsGenerator logic)
+                date_str = draft.created_at[:10] if draft.created_at else datetime.now().strftime("%Y-%m-%d")
+                doi = draft.paper.doi or ""
+                slug = doi.replace("/", "-").replace(".", "-").lower()[:40] if doi else "untitled"
+                card_dir = os.path.join(card_news_base, f"{date_str}_{slug}")
+                if os.path.isdir(card_dir):
+                    drafts_with_dirs.append((draft_data, card_dir))
+                else:
+                    print(f"   ⚠️ Card news not found: {card_dir}")
+
+            await poster.post_batch(drafts_with_dirs)
+        except Exception as e:
+            print(f"⚠️ Instagram 포스팅 실패 (계속 진행): {e}")
+
     # Summary with source info
     print("\n" + "=" * 60)
     print("📊 결과 요약")

@@ -16,6 +16,20 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
+          fetch-depth: 0  # Full history for gh-pages branch
+
+      - name: Ensure gh-pages branch exists
+        run: |
+          if ! git ls-remote --heads origin gh-pages | grep -q gh-pages; then
+            echo "Creating gh-pages branch..."
+            git checkout --orphan gh-pages
+            git rm -rf .
+            echo "# GitHub Pages - Card News Images" > README.md
+            git add README.md
+            git commit -m "Initialize gh-pages branch"
+            git push origin gh-pages
+            git checkout -
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,11 +37,20 @@ jobs:
           python-version: '3.12'
 
       - name: Install Python dependencies
-        run: pip install aiohttp google-genai python-dotenv
+        run: pip install aiohttp google-genai python-dotenv pillow
 
       - name: Run content pipeline
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INSTAGRAM_AUTO_POST: ${{ secrets.INSTAGRAM_AUTO_POST }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          PAGES_BASE_URL: "https://chang-myungoh.github.io/longevity-platform"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GIT_AUTHOR_NAME: "github-actions[bot]"
+          GIT_AUTHOR_EMAIL: "github-actions[bot]@users.noreply.github.com"
+          GIT_COMMITTER_NAME: "github-actions[bot]"
+          GIT_COMMITTER_EMAIL: "github-actions[bot]@users.noreply.github.com"
         working-directory: automation
         run: python content_pipeline.py
 
@@ -36,6 +59,15 @@ jobs:
           mkdir -p frontend/content
           cp automation/content_drafts/*.json frontend/content/ 2>/dev/null || true
           echo "Articles: $(ls frontend/content/*.json 2>/dev/null | wc -l)"
+
+      - name: Upload card news images
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: card-news-${{ github.run_number }}
+          path: automation/card_news/
+          retention-days: 30
+          if-no-files-found: ignore
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
