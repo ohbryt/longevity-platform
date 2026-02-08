@@ -64,5 +64,20 @@ cd "$FRONTEND_DIR"
 vercel --prod --yes >> "$LOG_FILE" 2>&1
 log "Step 3: Vercel deploy complete"
 
+# Step 4: Trigger newsletter digest (optional)
+# This relies on Vercel function + Resend env vars configured in production.
+if [ "${TRIGGER_DIGEST:-false}" = "true" ]; then
+    if [ -z "${DIGEST_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+        log "Step 4: Skipped digest trigger (missing DIGEST_URL or CRON_SECRET)"
+    else
+        log "Step 4: Triggering digest..."
+        curl -fsS -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            "$DIGEST_URL" >> "$LOG_FILE" 2>&1 || log "Step 4: Digest trigger failed"
+        log "Step 4: Digest trigger complete"
+    fi
+fi
+
 log "=== Pipeline finished successfully ==="
 echo "---" >> "$LOG_FILE"

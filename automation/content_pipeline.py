@@ -713,6 +713,25 @@ class ContentGenerator:
         """
         self.provider = provider
 
+    def _provider_has_key(self, provider: str) -> bool:
+        if provider == "kimi":
+            return bool(KIMI_API_KEY)
+        if provider == "gemini":
+            return bool(GEMINI_API_KEY)
+        if provider == "openai":
+            return bool(OPENAI_API_KEY)
+        return False
+
+    def _fallback_provider(self) -> Optional[str]:
+        """
+        Choose a reasonable fallback provider when the primary provider errors.
+        Preference: kimi -> gemini -> openai (cost first), but only if keys exist.
+        """
+        for p in ("kimi", "gemini", "openai"):
+            if p != self.provider and self._provider_has_key(p):
+                return p
+        return None
+
     async def generate_content(
         self,
         paper: Paper,
@@ -754,24 +773,27 @@ JSON 형식으로 응답해주세요:
     "confidence_score": 0.0-1.0
 }}"""
 
-        if self.provider == "gemini":
-            response = await self._call_gemini(prompt)
-        elif self.provider == "kimi":
-            response = await self._call_kimi(prompt)
-        else:
-            response = await self._call_openai(prompt)
+        async def call_with_provider(provider: str) -> str:
+            if provider == "gemini":
+                return await self._call_gemini(prompt)
+            if provider == "kimi":
+                return await self._call_kimi(prompt)
+            return await self._call_openai(prompt)
+
+        response: str
+        try:
+            response = await call_with_provider(self.provider)
+        except Exception:
+            fb = self._fallback_provider()
+            if not fb:
+                raise
+            response = await call_with_provider(fb)
 
         try:
             content_data = parse_json_response(response)
         except json.JSONDecodeError:
-            content_data = {
-                "korean_title": paper.title,
-                "korean_summary": "요약 생성 실패",
-                "korean_body": response,
-                "key_insights": [],
-                "practical_applications": [],
-                "confidence_score": 0.5
-            }
+            # Treat malformed output as a hard failure so we can try another paper/provider.
+            raise ValueError("AI response was not valid JSON")
 
         # Determine source from paper topics
         source = "pubmed"  # default
@@ -824,6 +846,8 @@ JSON 형식으로 응답해주세요:
                         ],
                     ),
                 )
+                if not getattr(response, "text", None):
+                    raise RuntimeError("Gemini returned empty response")
                 return response.text
             except Exception as e:
                 error_str = str(e)
@@ -832,27 +856,27 @@ JSON 형식으로 응답해주세요:
                     print(f"   ⏳ Rate limit, {wait}초 대기 후 재시도 ({attempt + 1}/{max_retries})...")
                     await asyncio.sleep(wait)
                     continue
-                return f"Gemini API error: {e}"
+                raise RuntimeError(f"Gemini API error: {e}") from e
 
     async def _call_openai(self, prompt: str) -> str:
         """Call OpenAI API"""
-        try:
-            from openai import AsyncOpenAI
+        from openai import AsyncOpenAI
 
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-            response = await client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT_KOREAN},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2048
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return f"OpenAI API error: {e}"
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": self.SYSTEM_PROMPT_KOREAN},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2048
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("OpenAI returned empty response")
+        return content
 
     async def _call_kimi(self, prompt: str) -> str:
         """
@@ -867,30 +891,101 @@ JSON 형식으로 응답해주세요:
         - Input: $2.50 / 1M tokens
         - Output: $10.00 / 1M tokens
         """
+        from openai import AsyncOpenAI
+
+        # Kimi uses OpenAI-compatible API
+        client = AsyncOpenAI(
+            api_key=KIMI_API_KEY,
+            base_url="https://api.moonshot.ai/v1",
+            timeout=120.0  # Kimi can be slower, allow 2 min
+        )
+
+        response = await client.chat.completions.create(
+            model="moonshot-v1-8k",  # Use 8k for faster response
+            messages=[
+                {"role": "system", "content": self.SYSTEM_PROMPT_KOREAN},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2048
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("Kimi returned empty response")
+        return content
+
+    async def revise_content(
+        self,
+        paper: Paper,
+        draft: ContentDraft,
+        issues: List[str],
+        content_type: str = "newsletter",
+    ) -> ContentDraft:
+        """
+        Try to auto-fix a draft based on fact-check issues.
+        This is intentionally conservative: prefer removing/qualifying claims over inventing details.
+        """
+        issues_text = "\n".join(f"- {i}" for i in (issues or [])[:8])
+        prompt = f"""다음 콘텐츠를 원본 초록 범위 내에서 수정해주세요.
+
+중요:
+- 초록/제목에 없는 숫자, 저자, 연도, 결과를 새로 만들지 마세요.
+- 확실하지 않으면 '초록에서 확인되지 않습니다'라고 명시하세요.
+- 용어는 원문 의미를 유지하세요(예: knockout vs inhibition 등).
+- 출력은 반드시 JSON만(코드블록/설명 없이) 반환하세요.
+
+## 원본 논문
+제목: {paper.title}
+저자: {', '.join(paper.authors)}
+저널: {paper.journal}
+발행일: {paper.pub_date}
+
+초록:
+{paper.abstract}
+
+## 기존 콘텐츠(JSON 일부)
+korean_title: {draft.korean_title}
+korean_summary: {draft.korean_summary}
+korean_body:
+{draft.korean_body}
+
+## 팩트체크 이슈
+{issues_text}
+
+JSON 형식으로 응답:
+{{
+  "korean_title": "...",
+  "korean_summary": "...",
+  "korean_body": "...",
+  "key_insights": ["...", "...", "..."],
+  "practical_applications": ["...", "..."],
+  "confidence_score": 0.0-1.0
+}}"""
+
+        original_provider = self.provider
         try:
-            from openai import AsyncOpenAI
+            response = await (self._call_gemini(prompt) if self.provider == "gemini"
+                              else self._call_kimi(prompt) if self.provider == "kimi"
+                              else self._call_openai(prompt))
+        except Exception:
+            fb = self._fallback_provider()
+            if not fb:
+                raise
+            self.provider = fb
+            response = await (self._call_gemini(prompt) if self.provider == "gemini"
+                              else self._call_kimi(prompt) if self.provider == "kimi"
+                              else self._call_openai(prompt))
+        finally:
+            self.provider = original_provider
 
-            from openai import AsyncOpenAI
-
-            # Kimi uses OpenAI-compatible API
-            client = AsyncOpenAI(
-                api_key=KIMI_API_KEY,
-                base_url="https://api.moonshot.ai/v1",
-                timeout=120.0  # Kimi can be slower, allow 2 min
-            )
-
-            response = await client.chat.completions.create(
-                model="moonshot-v1-8k",  # Use 8k for faster response
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT_KOREAN},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2048
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return f"Kimi API error: {e}"
+        content_data = parse_json_response(response)
+        draft.korean_title = content_data.get("korean_title", draft.korean_title)
+        draft.korean_summary = content_data.get("korean_summary", draft.korean_summary)
+        draft.korean_body = content_data.get("korean_body", draft.korean_body)
+        draft.key_insights = content_data.get("key_insights", draft.key_insights)
+        draft.practical_applications = content_data.get("practical_applications", draft.practical_applications)
+        draft.confidence_score = content_data.get("confidence_score", draft.confidence_score)
+        return draft
 
 
 class FactChecker:
@@ -1111,36 +1206,71 @@ class ContentPipeline:
             print(f"   {icon} {source}: {count}개")
         print(f"   총 {len(papers)}개 논문 발견")
 
-        top_papers = papers[:5]  # 상위 5개
-        drafts = []
+        # Target number of publishable drafts. If a draft can't be auto-fixed, try the next paper.
+        target_ready = int(os.getenv("TARGET_READY_DRAFTS", "5"))
+        max_papers = int(os.getenv("MAX_PAPERS_TO_PROCESS", "15"))
+        max_revisions = int(os.getenv("MAX_AUTO_REVISIONS", "2"))
 
-        for i, paper in enumerate(top_papers, 1):
-            print(f"\n📝 콘텐츠 생성 중 ({i}/{len(top_papers)}): {paper.title[:50]}...")
+        drafts: List[ContentDraft] = []
+        ready_count = 0
+        processed = 0
 
-            # Generate newsletter content
-            draft = await self.generator.generate_content(
-                paper,
-                content_type="newsletter",
-                language="korean"
-            )
+        for paper in papers:
+            if processed >= max_papers or ready_count >= target_ready:
+                break
+            processed += 1
 
-            # Fact check
-            print(f"   ✓ 팩트체크 중...")
-            fact_result = await self.fact_checker.check(draft)
-            draft.fact_check_notes = fact_result.get("issues", [])
+            print(f"\n📝 콘텐츠 생성 중 ({ready_count + 1}/{target_ready}): {paper.title[:50]}...")
 
-            if fact_result.get("safe_to_publish", False):
-                draft.status = "ready_for_review"
-                print(f"   ✅ 검토 준비 완료 (정확도: {fact_result.get('accuracy_score', 0):.0%})")
-            else:
+            try:
+                draft = await self.generator.generate_content(
+                    paper,
+                    content_type="newsletter",
+                    language="korean"
+                )
+            except Exception as e:
+                print(f"   ⚠️ 생성 실패(건너뜀): {e}")
+                continue
+
+            # Fact check + auto-revise loop
+            for attempt in range(max_revisions + 1):
+                print(f"   ✓ 팩트체크 중...")
+                fact_result = await self.fact_checker.check(draft)
+                draft.fact_check_notes = fact_result.get("issues", [])
+
+                if fact_result.get("safe_to_publish", False):
+                    draft.status = "ready_for_review"
+                    print(f"   ✅ 검토 준비 완료 (정확도: {fact_result.get('accuracy_score', 0):.0%})")
+                    break
+
+                # Auto-revise if we still have attempts left
+                if attempt < max_revisions and draft.fact_check_notes:
+                    print(f"   🔁 자동 수정 시도 ({attempt + 1}/{max_revisions})...")
+                    try:
+                        draft = await self.generator.revise_content(
+                            paper=paper,
+                            draft=draft,
+                            issues=draft.fact_check_notes,
+                            content_type="newsletter",
+                        )
+                        continue
+                    except Exception as e:
+                        print(f"   ⚠️ 자동 수정 실패: {e}")
+
                 draft.status = "needs_revision"
-                print(f"   ⚠️ 수정 필요: {', '.join(draft.fact_check_notes[:2])}")
-
-            # Rate limit 방지: 논문 사이 10초 대기
-            if i < len(top_papers):
-                await asyncio.sleep(10)
+                if draft.fact_check_notes:
+                    print(f"   ⚠️ 수정 필요: {', '.join(draft.fact_check_notes[:2])}")
+                else:
+                    print(f"   ⚠️ 수정 필요: 팩트체크 실패")
+                break
 
             drafts.append(draft)
+            if draft.status == "ready_for_review":
+                ready_count += 1
+
+            # Rate limit 방지: 논문 사이 10초 대기
+            if ready_count < target_ready:
+                await asyncio.sleep(10)
 
         return drafts
 
@@ -1193,8 +1323,21 @@ async def main():
     if not os.getenv("GEMINI_API_KEY") and ai_provider == "gemini":
         ai_provider = "openai"  # Fallback to openai
 
-    print(f"\n🤖 AI Provider: {ai_provider}")
-    pipeline = ContentPipeline(ai_provider=ai_provider, fact_check_provider=ai_provider)
+    # Fact-check provider should be stable and allowed to be different from generation.
+    fact_check_provider = os.getenv("FACT_CHECK_PROVIDER", "").strip().lower() or ""
+    if fact_check_provider not in ("kimi", "gemini", "openai"):
+        fact_check_provider = ""
+    if not fact_check_provider:
+        # Prefer Kimi for cost, then OpenAI, then fall back to generation provider.
+        if os.getenv("KIMI_API_KEY"):
+            fact_check_provider = "kimi"
+        elif os.getenv("OPENAI_API_KEY"):
+            fact_check_provider = "openai"
+        else:
+            fact_check_provider = ai_provider
+
+    print(f"\n🤖 AI Provider: {ai_provider} (fact-check: {fact_check_provider})")
+    pipeline = ContentPipeline(ai_provider=ai_provider, fact_check_provider=fact_check_provider)
 
     # Run weekly pipeline with multi-source
     drafts = await pipeline.run_weekly_pipeline(
