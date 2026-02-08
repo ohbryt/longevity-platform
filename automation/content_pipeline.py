@@ -1005,44 +1005,96 @@ class FactChecker:
 
     FACT_CHECK_PROMPT = """당신은 의학 논문 팩트체커입니다.
 
-다음 AI 생성 콘텐츠가 원본 논문과 일치하는지 검증해주세요.
+다음 AI 생성 콘텐츠가 제공된 "논문 메타데이터 + 초록"과 일치하는지 검증해주세요.
 
-## 원본 논문
+주의:
+- 초록에 없는 내용이라도, 아래 메타데이터(저자/저널/연도/DOI/URL)는 사실로 간주할 수 있습니다.
+- 인용 형식(예: et al.)의 스타일 차이만으로는 문제로 삼지 마세요.
+- 본문이 메타데이터/초록을 넘어서는 '추가 숫자/결과/인과'를 제시하면 문제로 지적하세요.
+- 확실하지 않은 경우 '초록에서 확인되지 않습니다'로 표시하도록 제안하세요.
+
+## 원본 논문(메타데이터)
 제목: {title}
-초록: {abstract}
+저자: {authors}
+저널: {journal}
+발행일: {pub_date}
+DOI: {doi}
+URL: {url}
+
+## 원본 초록
+{abstract}
 
 ## AI 생성 콘텐츠
 {content}
 
 ## 검증 항목
-1. 숫자/통계 정확성
+1. 숫자/통계 정확성 (초록/메타데이터 기반)
 2. 인과관계 왜곡 여부
 3. 과장된 표현 여부
-4. 누락된 중요 정보
-5. 잠재적 오해 가능성
+4. 잠재적 오해 가능성
 
 JSON 형식으로 응답:
 {{
-    "accuracy_score": 0.0-1.0,
-    "issues": ["문제점1", "문제점2"],
-    "suggestions": ["수정제안1", "수정제안2"],
-    "safe_to_publish": true/false
+  "accuracy_score": 0.0-1.0,
+  "issues": ["문제점1", "문제점2"],
+  "suggestions": ["수정제안1", "수정제안2"],
+  "safe_to_publish": true/false
 }}"""
 
     async def check(self, draft: ContentDraft) -> Dict[str, Any]:
         """Fact-check a content draft"""
         prompt = self.FACT_CHECK_PROMPT.format(
             title=draft.paper.title,
+            authors=", ".join(draft.paper.authors or []),
+            journal=draft.paper.journal,
+            pub_date=draft.paper.pub_date,
+            doi=draft.paper.doi,
+            url=draft.paper.url,
             abstract=draft.paper.abstract,
             content=draft.korean_body
         )
 
-        if self.provider == "kimi":
-            return await self._check_with_kimi(prompt)
-        elif self.provider == "gemini":
-            return await self._check_with_gemini(prompt)
-        else:
+        async def try_provider(provider: str) -> Dict[str, Any]:
+            if provider == "kimi":
+                return await self._check_with_kimi(prompt)
+            if provider == "gemini":
+                return await self._check_with_gemini(prompt)
             return await self._check_with_openai(prompt)
+
+        # First attempt with configured provider; if it fails due to auth/timeout/parse,
+        # fall back to another provider that has a key configured.
+        primary = self.provider
+        result = await try_provider(primary)
+
+        issues_text = " ".join(result.get("issues", []) or [])
+        should_fallback = (
+            result.get("accuracy_score", 0.0) == 0.0
+            and ("Invalid Authentication" in issues_text or "401" in issues_text or "timed out" in issues_text)
+        ) or ("JSON 파싱 실패" in issues_text)
+
+        if not should_fallback:
+            return result
+
+        fallbacks: List[str] = []
+        # Prefer OpenAI for fact-check if available, then Gemini, then Kimi.
+        if primary != "openai" and OPENAI_API_KEY:
+            fallbacks.append("openai")
+        if primary != "gemini" and GEMINI_API_KEY:
+            fallbacks.append("gemini")
+        if primary != "kimi" and KIMI_API_KEY:
+            fallbacks.append("kimi")
+
+        for fb in fallbacks:
+            fb_result = await try_provider(fb)
+            fb_issues_text = " ".join(fb_result.get("issues", []) or [])
+            # Accept fallback if it produced a non-zero score or a publishable result.
+            if fb_result.get("safe_to_publish") or fb_result.get("accuracy_score", 0.0) > 0.0:
+                return fb_result
+            # If fallback isn't an auth/timeout failure, return it (more informative).
+            if "Invalid Authentication" not in fb_issues_text and "401" not in fb_issues_text:
+                return fb_result
+
+        return result
 
     async def _check_with_gemini(self, prompt: str) -> Dict[str, Any]:
         """Fact-check using Gemini (new google.genai SDK)"""
