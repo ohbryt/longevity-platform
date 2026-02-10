@@ -1451,11 +1451,12 @@ async def main():
     if fact_check_provider not in ("kimi", "gemini", "openai"):
         fact_check_provider = ""
     if not fact_check_provider:
-        # Prefer Kimi for cost, then OpenAI, then fall back to generation provider.
-        if os.getenv("KIMI_API_KEY"):
-            fact_check_provider = "kimi"
-        elif os.getenv("OPENAI_API_KEY"):
+        # Prefer reliability for automation: OpenAI first (if configured),
+        # then Kimi (cheap), then fall back to generation provider.
+        if os.getenv("OPENAI_API_KEY"):
             fact_check_provider = "openai"
+        elif os.getenv("KIMI_API_KEY"):
+            fact_check_provider = "kimi"
         else:
             fact_check_provider = ai_provider
 
