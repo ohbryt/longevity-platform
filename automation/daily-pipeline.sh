@@ -12,6 +12,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 LOG_FILE="$SCRIPT_DIR/pipeline.log"
 
+export SCRIPT_DIR ROOT_DIR FRONTEND_DIR LOG_FILE
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
@@ -44,7 +46,30 @@ log "Step 2: Copying content to frontend..."
 mkdir -p "$FRONTEND_DIR/content"
 
 BEFORE_COUNT=$(ls "$FRONTEND_DIR/content/"*.json 2>/dev/null | wc -l | tr -d ' ')
-cp "$SCRIPT_DIR/content_drafts/"*.json "$FRONTEND_DIR/content/" 2>/dev/null || true
+# Copy only publishable drafts to avoid polluting the site with needs_revision content.
+python3 - <<'PY' >> "$LOG_FILE" 2>&1
+import glob, json, os, shutil
+
+src = os.path.join(os.environ.get("SCRIPT_DIR", ""), "content_drafts")
+dst = os.path.join(os.environ.get("FRONTEND_DIR", ""), "content")
+
+copied = 0
+skipped = 0
+
+for p in glob.glob(os.path.join(src, "*.json")):
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if d.get("status") != "ready_for_review":
+            skipped += 1
+            continue
+        shutil.copy2(p, os.path.join(dst, os.path.basename(p)))
+        copied += 1
+    except Exception:
+        skipped += 1
+
+print(f"Copied {copied} ready drafts to frontend/content (skipped {skipped})")
+PY
 AFTER_COUNT=$(ls "$FRONTEND_DIR/content/"*.json 2>/dev/null | wc -l | tr -d ' ')
 
 log "Step 2: $BEFORE_COUNT → $AFTER_COUNT articles"
