@@ -38,8 +38,8 @@ def parse_json_response(text: str) -> dict:
             return json.loads(match.group())
         raise
 
-# Load .env file
-load_dotenv()
+# Load automation/.env reliably regardless of CWD (launchd/cron can vary).
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 # Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
