@@ -151,6 +151,9 @@ class PaperDiscovery:
         self.pubmed_base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
         self.biorxiv_base = "https://api.biorxiv.org"
         self.clinicaltrials_base = "https://clinicaltrials.gov/api/v2"
+        # Default retry settings for flaky networks (DNS/wifi sleep/wake, etc.)
+        self.http_retries = int(os.getenv("DISCOVERY_HTTP_RETRIES", "4"))
+        self.http_timeout_s = int(os.getenv("DISCOVERY_HTTP_TIMEOUT_S", "30"))
 
     # ============ PubMed Integration ============
     async def search_pubmed(
@@ -175,12 +178,25 @@ class PaperDiscovery:
             "sort": "relevance"
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, params=params) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
-                ids = data.get("esearchresult", {}).get("idlist", [])
+        ids: List[str] = []
+        timeout = aiohttp.ClientTimeout(total=self.http_timeout_s)
+        for attempt in range(self.http_retries):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                    async with session.get(search_url, params=params) as resp:
+                        if resp.status != 200:
+                            return []
+                        data = await resp.json()
+                        ids = data.get("esearchresult", {}).get("idlist", [])
+                break
+            except (aiohttp.ClientError, OSError) as e:
+                if attempt < self.http_retries - 1:
+                    wait = min(60, 5 * (2 ** attempt))
+                    print(f"PubMed search error (retry in {wait}s): {e}")
+                    await asyncio.sleep(wait)
+                    continue
+                print(f"PubMed search failed (giving up): {e}")
+                return []
 
         if not ids:
             return []
@@ -200,11 +216,24 @@ class PaperDiscovery:
         }
 
         papers = []
-        async with aiohttp.ClientSession() as session:
-            async with session.get(fetch_url, params=params) as resp:
-                if resp.status != 200:
-                    return []
-                xml_text = await resp.text()
+        xml_text = ""
+        timeout = aiohttp.ClientTimeout(total=self.http_timeout_s)
+        for attempt in range(self.http_retries):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                    async with session.get(fetch_url, params=params) as resp:
+                        if resp.status != 200:
+                            return []
+                        xml_text = await resp.text()
+                break
+            except (aiohttp.ClientError, OSError) as e:
+                if attempt < self.http_retries - 1:
+                    wait = min(60, 5 * (2 ** attempt))
+                    print(f"PubMed fetch error (retry in {wait}s): {e}")
+                    await asyncio.sleep(wait)
+                    continue
+                print(f"PubMed fetch failed (giving up): {e}")
+                return []
 
         try:
             root = ET.fromstring(xml_text)
@@ -277,11 +306,11 @@ class PaperDiscovery:
 
         papers = []
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.http_timeout_s), trust_env=True) as session:
                 # Paginate up to 3 pages (300 papers) for better coverage
                 for cursor in range(0, 300, 100):
                     page_url = f"{self.biorxiv_base}/details/{server}/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}/{cursor}/json"
-                    async with session.get(page_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    async with session.get(page_url) as resp:
                         if resp.status != 200:
                             break
                         data = await resp.json()
@@ -353,8 +382,8 @@ class PaperDiscovery:
 
         trials = []
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.http_timeout_s), trust_env=True) as session:
+                async with session.get(url, params=params) as resp:
                     if resp.status != 200:
                         return []
                     data = await resp.json()
@@ -458,7 +487,11 @@ class PaperDiscovery:
             print(f"   🔍 Keyword: {keyword}")
 
             # PubMed (always)
-            pubmed_papers = await self.search_pubmed(keyword, max_results=10, days_back=7)
+            try:
+                pubmed_papers = await self.search_pubmed(keyword, max_results=10, days_back=7)
+            except Exception as e:
+                print(f"PubMed keyword search failed (skipping): {e}")
+                pubmed_papers = []
             for p in pubmed_papers:
                 if not p.topics or "pubmed" not in p.topics:
                     p.topics = ["pubmed"]
@@ -466,18 +499,30 @@ class PaperDiscovery:
 
             if include_preprints:
                 # bioRxiv
-                biorxiv_papers = await self.search_biorxiv(keyword, max_results=5, days_back=30)
+                try:
+                    biorxiv_papers = await self.search_biorxiv(keyword, max_results=5, days_back=30)
+                except Exception as e:
+                    print(f"biorxiv keyword search failed (skipping): {e}")
+                    biorxiv_papers = []
                 all_papers.extend(biorxiv_papers)
 
                 # medRxiv (30 days, broader window for medical preprints)
-                medrxiv_papers = await self.search_medrxiv(keyword, max_results=5, days_back=30)
+                try:
+                    medrxiv_papers = await self.search_medrxiv(keyword, max_results=5, days_back=30)
+                except Exception as e:
+                    print(f"medrxiv keyword search failed (skipping): {e}")
+                    medrxiv_papers = []
                 all_papers.extend(medrxiv_papers)
 
         # Clinical trials use broader keywords for better results
         if include_trials:
             for keyword in self.CLINICAL_TRIAL_KEYWORDS[:6]:
                 print(f"   🏥 Clinical trial keyword: {keyword}")
-                trials = await self.search_clinical_trials(keyword, max_results=5)
+                try:
+                    trials = await self.search_clinical_trials(keyword, max_results=5)
+                except Exception as e:
+                    print(f"ClinicalTrials keyword search failed (skipping): {e}")
+                    trials = []
                 for trial in trials:
                     all_papers.append(self.clinical_trial_to_paper(trial))
 
