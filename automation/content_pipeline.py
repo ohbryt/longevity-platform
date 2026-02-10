@@ -508,6 +508,11 @@ class PaperDiscovery:
         all_papers = []
         print("📚 Searching multiple sources...")
 
+        # Test hook: allow forcing empty discovery to validate fallback publishing path.
+        if os.getenv("SIMULATE_DISCOVERY_EMPTY", "false").lower() == "true":
+            print("⚠️ SIMULATE_DISCOVERY_EMPTY=true (discovery bypass)")
+            return []
+
         # Search each source for top keywords
         for keyword in self.LONGEVITY_KEYWORDS[:5]:
             print(f"   🔍 Keyword: {keyword}")
@@ -1422,6 +1427,115 @@ class ContentPipeline:
 
         print(f"\n💾 {len(drafts)}개 콘텐츠 저장 완료: {output_dir}/")
 
+    def load_recent_ready_drafts(
+        self,
+        drafts_dir: str = "content_drafts",
+        limit: int = 5,
+        exclude_internal: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Load recent drafts from disk and return raw dicts for those that are publishable.
+        Used for fallback publishing when discovery/providers are down.
+        """
+        if not os.path.isdir(drafts_dir):
+            return []
+
+        files = [f for f in os.listdir(drafts_dir) if f.endswith(".json")]
+        files.sort(reverse=True)
+
+        out: List[Dict[str, Any]] = []
+        for name in files:
+            if len(out) >= limit:
+                break
+            path = os.path.join(drafts_dir, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if d.get("status") != "ready_for_review":
+                    continue
+                if exclude_internal:
+                    doi = (d.get("paper") or {}).get("doi", "") or ""
+                    if doi.startswith("digest-"):
+                        continue
+                out.append(d)
+            except Exception:
+                continue
+        return out
+
+    def create_fallback_digest(
+        self,
+        source_drafts: List[Dict[str, Any]],
+        title_date: Optional[str] = None,
+    ) -> Optional[ContentDraft]:
+        """
+        Create an internal digest as a publishable draft from existing ready drafts.
+        This is used to guarantee a daily "update" even when external discovery is down.
+        """
+        if not source_drafts:
+            return None
+
+        today = datetime.now()
+        date_str = title_date or today.strftime("%Y-%m-%d")
+
+        items = source_drafts[:5]
+        lines = []
+        citations: List[Dict[str, str]] = []
+        for i, d in enumerate(items, 1):
+            paper = d.get("paper") or {}
+            kt = d.get("korean_title") or paper.get("title") or "(untitled)"
+            ks = d.get("korean_summary") or ""
+            url = paper.get("url") or ""
+            doi = paper.get("doi") or ""
+            ref = url or (f"https://doi.org/{doi}" if doi and not doi.startswith("NCT") else "")
+            lines.append(f"{i}. {kt}")
+            if ks:
+                lines.append(f"   - {ks}")
+            if ref:
+                lines.append(f"   - 원문: {ref}")
+            if doi:
+                citations.append({"doi": doi, "title": paper.get("title") or kt, "journal": paper.get("journal") or ""})
+
+        korean_body = "\n".join(
+            [
+                "안녕하세요, Longevity Lab입니다.",
+                "",
+                f"오늘({date_str})의 Research Digest입니다. 오늘은 외부 데이터 소스 연결이 불안정할 수 있어, 최근 검토 완료(ready_for_review) 콘텐츠 중 핵심만 묶어 전달드립니다.",
+                "",
+                *lines,
+                "",
+                "본 콘텐츠는 교육 목적으로 제공되며 의학적 조언을 대체하지 않습니다.",
+            ]
+        )
+
+        paper = Paper(
+            title=f"Longevity Lab Research Digest ({date_str})",
+            authors=["Longevity Lab"],
+            abstract=f"Daily digest compiled from {len(items)} recent ready_for_review articles.",
+            journal="Longevity Lab",
+            doi=f"digest-{date_str}",
+            pub_date=date_str,
+            url="",
+            topics=["internal_digest"],
+        )
+
+        return ContentDraft(
+            paper=paper,
+            content_type="newsletter",
+            korean_title=f"[Longevity Lab] {today.month}월 {today.day}일 Research Digest",
+            korean_summary="최근 검토 완료된 연구 콘텐츠 중 핵심만 모아 전달드립니다.",
+            korean_body=korean_body,
+            english_title=paper.title,
+            english_summary=paper.abstract,
+            key_insights=[(d.get("key_insights") or [""])[0] for d in items if (d.get("key_insights") or [""])[0]][:3],
+            practical_applications=[],
+            citations=citations,
+            fact_check_notes=[],
+            confidence_score=1.0,
+            created_at=today.isoformat(),
+            status="ready_for_review",
+            source="internal_digest",
+        )
+
 
 # Example usage
 async def main():
@@ -1463,11 +1577,28 @@ async def main():
     print(f"\n🤖 AI Provider: {ai_provider} (fact-check: {fact_check_provider})")
     pipeline = ContentPipeline(ai_provider=ai_provider, fact_check_provider=fact_check_provider)
 
-    # Run weekly pipeline with multi-source
-    drafts = await pipeline.run_weekly_pipeline(
-        include_preprints=include_preprints,
-        include_trials=include_trials
-    )
+    # Run pipeline with multi-source discovery.
+    drafts: List[ContentDraft] = []
+    try:
+        drafts = await pipeline.run_weekly_pipeline(
+            include_preprints=include_preprints,
+            include_trials=include_trials
+        )
+    except Exception as e:
+        # Don't crash the daily automation. We'll fall back to a digest from existing ready drafts.
+        print(f"⚠️ 논문 수집/생성 실패: {e}")
+        drafts = []
+
+    # If we have no publishable output, create a fallback digest from recent ready drafts on disk.
+    fallback_enabled = os.getenv("PUBLISH_FALLBACK_DIGEST", "true").lower() == "true"
+    if fallback_enabled and not any(d.status == "ready_for_review" for d in drafts):
+        recent_ready = pipeline.load_recent_ready_drafts(limit=5)
+        digest = pipeline.create_fallback_digest(recent_ready)
+        if digest:
+            print("\n🗞️ Fallback digest 생성: 외부 소스 장애로 인해 최신 ready 콘텐츠를 묶어 발행합니다.")
+            drafts.append(digest)
+        else:
+            print("\n⚠️ Fallback digest 생성 불가: ready_for_review 콘텐츠가 없어 오늘 발행을 건너뜁니다.")
 
     # Save drafts
     pipeline.save_drafts(drafts)
