@@ -179,7 +179,12 @@ class PaperDiscovery:
         }
 
         ids: List[str] = []
-        timeout = aiohttp.ClientTimeout(total=self.http_timeout_s)
+        timeout = aiohttp.ClientTimeout(
+            total=self.http_timeout_s,
+            connect=min(10, self.http_timeout_s),
+            sock_connect=min(10, self.http_timeout_s),
+            sock_read=self.http_timeout_s,
+        )
         for attempt in range(self.http_retries):
             try:
                 async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
@@ -217,7 +222,12 @@ class PaperDiscovery:
 
         papers = []
         xml_text = ""
-        timeout = aiohttp.ClientTimeout(total=self.http_timeout_s)
+        timeout = aiohttp.ClientTimeout(
+            total=self.http_timeout_s,
+            connect=min(10, self.http_timeout_s),
+            sock_connect=min(10, self.http_timeout_s),
+            sock_read=self.http_timeout_s,
+        )
         for attempt in range(self.http_retries):
             try:
                 async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
@@ -306,7 +316,15 @@ class PaperDiscovery:
 
         papers = []
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.http_timeout_s), trust_env=True) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(
+                    total=self.http_timeout_s,
+                    connect=min(10, self.http_timeout_s),
+                    sock_connect=min(10, self.http_timeout_s),
+                    sock_read=self.http_timeout_s,
+                ),
+                trust_env=True,
+            ) as session:
                 # Paginate up to 3 pages (300 papers) for better coverage
                 for cursor in range(0, 300, 100):
                     page_url = f"{self.biorxiv_base}/details/{server}/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}/{cursor}/json"
@@ -382,7 +400,15 @@ class PaperDiscovery:
 
         trials = []
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.http_timeout_s), trust_env=True) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(
+                    total=self.http_timeout_s,
+                    connect=min(10, self.http_timeout_s),
+                    sock_connect=min(10, self.http_timeout_s),
+                    sock_read=self.http_timeout_s,
+                ),
+                trust_env=True,
+            ) as session:
                 async with session.get(url, params=params) as resp:
                     if resp.status != 200:
                         return []
