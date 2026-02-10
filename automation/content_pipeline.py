@@ -154,6 +154,10 @@ class PaperDiscovery:
         # Default retry settings for flaky networks (DNS/wifi sleep/wake, etc.)
         self.http_retries = int(os.getenv("DISCOVERY_HTTP_RETRIES", "4"))
         self.http_timeout_s = int(os.getenv("DISCOVERY_HTTP_TIMEOUT_S", "30"))
+        self._pubmed_down = False
+        self._biorxiv_down = False
+        self._medrxiv_down = False
+        self._clinicaltrials_down = False
 
     # ============ PubMed Integration ============
     async def search_pubmed(
@@ -201,6 +205,7 @@ class PaperDiscovery:
                     await asyncio.sleep(wait)
                     continue
                 print(f"PubMed search failed (giving up): {e}")
+                self._pubmed_down = True
                 return []
 
         if not ids:
@@ -243,6 +248,7 @@ class PaperDiscovery:
                     await asyncio.sleep(wait)
                     continue
                 print(f"PubMed fetch failed (giving up): {e}")
+                self._pubmed_down = True
                 return []
 
         try:
@@ -364,6 +370,10 @@ class PaperDiscovery:
 
         except Exception as e:
             print(f"{server} search error: {e}")
+            if server == "biorxiv":
+                self._biorxiv_down = True
+            if server == "medrxiv":
+                self._medrxiv_down = True
 
         return papers[:max_results]
 
@@ -442,6 +452,7 @@ class PaperDiscovery:
 
         except Exception as e:
             print(f"ClinicalTrials.gov search error: {e}")
+            self._clinicaltrials_down = True
 
         return trials
 
@@ -519,9 +530,13 @@ class PaperDiscovery:
 
             # PubMed (always)
             try:
-                pubmed_papers = await self.search_pubmed(keyword, max_results=10, days_back=7)
+                if self._pubmed_down:
+                    pubmed_papers = []
+                else:
+                    pubmed_papers = await self.search_pubmed(keyword, max_results=10, days_back=7)
             except Exception as e:
                 print(f"PubMed keyword search failed (skipping): {e}")
+                self._pubmed_down = True
                 pubmed_papers = []
             for p in pubmed_papers:
                 if not p.topics or "pubmed" not in p.topics:
@@ -531,28 +546,45 @@ class PaperDiscovery:
             if include_preprints:
                 # bioRxiv
                 try:
-                    biorxiv_papers = await self.search_biorxiv(keyword, max_results=5, days_back=30)
+                    if self._biorxiv_down:
+                        biorxiv_papers = []
+                    else:
+                        biorxiv_papers = await self.search_biorxiv(keyword, max_results=5, days_back=30)
                 except Exception as e:
                     print(f"biorxiv keyword search failed (skipping): {e}")
+                    self._biorxiv_down = True
                     biorxiv_papers = []
                 all_papers.extend(biorxiv_papers)
 
                 # medRxiv (30 days, broader window for medical preprints)
                 try:
-                    medrxiv_papers = await self.search_medrxiv(keyword, max_results=5, days_back=30)
+                    if self._medrxiv_down:
+                        medrxiv_papers = []
+                    else:
+                        medrxiv_papers = await self.search_medrxiv(keyword, max_results=5, days_back=30)
                 except Exception as e:
                     print(f"medrxiv keyword search failed (skipping): {e}")
+                    self._medrxiv_down = True
                     medrxiv_papers = []
                 all_papers.extend(medrxiv_papers)
+
+            # If everything is down early, stop wasting time.
+            if self._pubmed_down and (not include_preprints or (self._biorxiv_down and self._medrxiv_down)):
+                print("⚠️ Discovery network appears down (PubMed/preprints). Stopping early.")
+                break
 
         # Clinical trials use broader keywords for better results
         if include_trials:
             for keyword in self.CLINICAL_TRIAL_KEYWORDS[:6]:
                 print(f"   🏥 Clinical trial keyword: {keyword}")
                 try:
-                    trials = await self.search_clinical_trials(keyword, max_results=5)
+                    if self._clinicaltrials_down:
+                        trials = []
+                    else:
+                        trials = await self.search_clinical_trials(keyword, max_results=5)
                 except Exception as e:
                     print(f"ClinicalTrials keyword search failed (skipping): {e}")
+                    self._clinicaltrials_down = True
                     trials = []
                 for trial in trials:
                     all_papers.append(self.clinical_trial_to_paper(trial))

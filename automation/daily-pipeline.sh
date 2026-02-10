@@ -14,6 +14,14 @@ LOG_FILE="$SCRIPT_DIR/pipeline.log"
 
 export SCRIPT_DIR ROOT_DIR FRONTEND_DIR LOG_FILE
 
+# Prevent overlapping runs (launchd can be manually kickstarted).
+LOCK_DIR="$SCRIPT_DIR/.pipeline.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    log "Another pipeline run is already active, exiting."
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
