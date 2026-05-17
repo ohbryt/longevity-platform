@@ -2,8 +2,8 @@ name: Daily Content Pipeline
 
 on:
   schedule:
-    # 매주 월요일 오전 9시 KST = 일요일 00:00 UTC
-    - cron: '0 0 * * 1'
+    # 매주 일요일 00:00 UTC = 월요일 오전 9시 KST
+    - cron: '0 0 * * 0'
   workflow_dispatch: # 수동 실행 가능
 
 jobs:
@@ -86,7 +86,7 @@ jobs:
         run: |
           vercel pull --yes --environment=production --token=$VERCEL_TOKEN
           vercel build --prod --token=$VERCEL_TOKEN
-          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN 2>&1 | grep -o 'https://[^ ]*')
+          DEPLOY_URL=$(vercel deploy --prod --token=$VERCEL_TOKEN 2>&1 | grep -o 'https://[^ ]*')
           echo "Deployed: $DEPLOY_URL"
 
       - name: Send weekly digest to subscribers
